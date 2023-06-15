@@ -1629,6 +1629,7 @@ def _create_image_aws(cluster: str, ray_config: Dict[str, Any]) -> str:
         raise
     return image_id
 
+
 def check_owner_identity(cluster_name: str) -> None:
     """Check if current user is the same as the user who created the cluster.
 
