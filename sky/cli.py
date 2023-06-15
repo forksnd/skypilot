@@ -725,6 +725,7 @@ def _launch_with_confirm(
     retry_until_up: bool = False,
     no_setup: bool = False,
     node_type: Optional[str] = None,
+    clone_disk_from: Optional[str] = None,
 ):
     """Launch a cluster with a Task."""
     with sky.Dag() as dag:
@@ -745,6 +746,16 @@ def _launch_with_confirm(
     task = dag.tasks[0]
 
     _check_resources_match(backend, cluster, task, node_type=node_type)
+
+    if clone_disk_from is not None:
+        source_cluster_status, _ = backend_utils.refresh_cluster_status_handle(
+            clone_disk_from)
+        if source_cluster_status is None:
+            raise click.UsageError('Cannot find cluster to clone disk from.')
+        if source_cluster_status != global_user_state.ClusterStatus.STOPPED:
+            raise click.UsageError(
+                'Cannot clone disk from a RUNNING cluster. Please stop the '
+                f'cluster first: sky stop {clone_disk_from}.')
 
     confirm_shown = False
     if not no_confirm:
@@ -792,6 +803,7 @@ def _launch_with_confirm(
             down=down,
             retry_until_up=retry_until_up,
             no_setup=no_setup,
+            clone_disk_from=clone_disk_from,
         )
 
 
@@ -1259,6 +1271,15 @@ def cli():
               default=False,
               required=False,
               help='Skip setup phase when (re-)launching cluster.')
+@click.option(
+    '--clone-disk-from',
+    '--clone',
+    default=None,
+    type=str,
+    **_get_shell_complete_args(_complete_cluster_name),
+    help=('[Experimental] Clone disk from an existing cluster to launch '
+          'a new one. This is useful when the new cluster needs to have '
+          'the same data on the boot disk as the existing cluster.'))
 @usage_lib.entrypoint
 def launch(
     entrypoint: List[str],
@@ -1287,6 +1308,7 @@ def launch(
     retry_until_up: bool,
     yes: bool,
     no_setup: bool,
+    clone_disk_from: Optional[str],
 ):
     # NOTE(dev): Keep the docstring consistent between the Python API and CLI.
     """Launch a task from a YAML or a command (rerun setup if cluster exists).

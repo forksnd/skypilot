@@ -1592,6 +1592,43 @@ def check_network_connection():
                                               'Network seems down.') from e
 
 
+def _create_image_aws(cluster: str, ray_config: Dict[str, Any]) -> str:
+    """Create a image for the cluster on AWS and returns the image id."""
+    region = ray_config['provider']['region']
+    image_name = f'skypilot-{cluster}-{int(time.time())}'
+    query_instance_id_cmd = (
+        f'aws ec2 describe-instances --region {region} --filters '
+        f'Name=tag:ray-cluster-name,Values={cluster} '
+        'Name=tag:ray-node-type,Values=Head '
+        '--query "Reservations[*].Instances[*].InstanceId" '
+        '--output text')
+    returncode, stdout, stderr = log_lib.run_with_log(query_instance_id_cmd,
+                                                      '/dev/null',
+                                                      require_outputs=True,
+                                                      shell=True)
+    subprocess_utils.handle_returncode(returncode,
+                                       query_instance_id_cmd,
+                                       error_msg='Failed to query instance id.',
+                                       stderr=stderr)
+    instance_id = stdout.strip()
+    if not instance_id:
+        raise
+    create_image_cmd = (
+        f'aws ec2 create-image --region {region} --instance-id {instance_id} '
+        f'--name {image_name} --output text')
+    returncode, stdout, stderr = log_lib.run_with_log(create_image_cmd,
+                                                      '/dev/null',
+                                                      require_outputs=True,
+                                                      shell=True)
+    subprocess_utils.handle_returncode(returncode,
+                                       create_image_cmd,
+                                       error_msg='Failed to create image.',
+                                       stderr=stderr)
+    image_id = stdout.strip()
+    if not image_id:
+        raise
+    return image_id
+
 def check_owner_identity(cluster_name: str) -> None:
     """Check if current user is the same as the user who created the cluster.
 

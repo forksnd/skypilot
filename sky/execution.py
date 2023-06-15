@@ -341,6 +341,7 @@ def launch(
     detach_setup: bool = False,
     detach_run: bool = False,
     no_setup: bool = False,
+    clone_disk_from: Optional[str] = None,
     # Internal only:
     # pylint: disable=invalid-name
     _is_launched_by_spot_controller: bool = False,
@@ -390,6 +391,9 @@ def launch(
         detach_run: If True, as soon as a job is submitted, return from this
             function and do not stream execution logs.
         no_setup: if True, do not re-run setup commands.
+        clone_disk_from: [Experimental] if set, clone the disk from the
+            specified cluster. This is useful to migrate the cluster to a
+            different availability zone or region.
 
     Example:
         .. code-block:: python
@@ -438,6 +442,7 @@ def launch(
         detach_run=detach_run,
         idle_minutes_to_autostop=idle_minutes_to_autostop,
         no_setup=no_setup,
+        clone_disk_from=clone_disk_from,
         _is_launched_by_spot_controller=_is_launched_by_spot_controller,
     )
 
