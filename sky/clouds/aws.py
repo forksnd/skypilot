@@ -759,8 +759,11 @@ class AWS(clouds.Cloud):
         return statuses
 
     @classmethod
-    def create_image_from_cluster(cls, name: str, tag_filters: Dict[str, str],
-                                  region: Optional[str], zone: Optional[str]=None,
+    def create_image_from_cluster(cls,
+                                  name: str,
+                                  tag_filters: Dict[str, str],
+                                  region: Optional[str],
+                                  zone: Optional[str] = None,
                                   **kwargs) -> str:
         del zone, kwargs  # unused
         assert region is not None, (tag_filters, region)
@@ -802,11 +805,12 @@ class AWS(clouds.Cloud):
         image_id = stdout.strip()
         # Wait for the image to be available
         wait_image_cmd = (
-            f'aws ec2 wait image-available --region {region} --image-ids {image_id}')
+            f'aws ec2 wait image-available --region {region} --image-ids {image_id}'
+        )
         returncode, stdout, stderr = log_lib.run_with_log(wait_image_cmd,
-                                                            '/dev/null',
-                                                            require_outputs=True,
-                                                            shell=True)
+                                                          '/dev/null',
+                                                          require_outputs=True,
+                                                          shell=True)
         subprocess_utils.handle_returncode(
             returncode,
             wait_image_cmd,

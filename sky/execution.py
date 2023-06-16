@@ -40,6 +40,7 @@ from sky.usage import usage_lib
 from sky.skylet import constants
 from sky.utils import common_utils
 from sky.utils import dag_utils
+from sky.utils import log_utils
 from sky.utils import env_options, timeline
 from sky.utils import subprocess_utils
 from sky.utils import ux_utils
@@ -341,6 +342,7 @@ def launch(
     detach_setup: bool = False,
     detach_run: bool = False,
     no_setup: bool = False,
+    clone_disk_from: Optional[str] = None,
     # Internal only:
     # pylint: disable=invalid-name
     _is_launched_by_spot_controller: bool = False,
@@ -428,6 +430,43 @@ def launch(
     backend_utils.check_cluster_name_not_reserved(cluster_name,
                                                   operation_str='sky.launch')
 
+    if clone_disk_from:
+        if isinstance(entrypoint, sky.Dag):
+            if len(entrypoint.tasks) > 1:
+                with ux_utils.print_exception_no_traceback():
+                    raise exceptions.NotSupportedError(
+                        'Launching a DAG with clone_disk_from is not '
+                        'supported yet.')
+            else:
+                entrypoint = entrypoint.tasks[0]
+        assert isinstance(entrypoint, sky.Task), entrypoint
+        task, handle = backend_utils.check_clone_disk_and_override_task(
+            clone_disk_from, entrypoint)
+        original_cloud = handle.launched_resources.cloud
+        task_resources = list(task.resources)[0]
+
+        with log_utils.safe_rich_status('Creating image from source cluster '
+                                        f'{clone_disk_from!r}') as console:
+            image_id = original_cloud.create_image_from_cluster(
+                clone_disk_from,
+                backend_utils.tag_filter_for_cluster(clone_disk_from),
+                region=handle.launched_resources.region,
+            )
+            if task_resources.region != handle.launched_resources.region:
+                console.update(f'Migrating image {image_id} to target region '
+                               f'{task_resources.region}...')
+                image_id = original_cloud.copy_image(
+                    image_id,
+                    source_region=handle.launched_resources.region,
+                    source_zone=handle.launched_resources.zone,
+                    target_region=task_resources.region,
+                    target_zone=task_resources.zone)
+        sky_logging.print(
+            f'Image {image_id!r} created successfully. Overriding task '
+            f'image_id to {image_id!r}')
+        task_resources = task_resources.copy(image_id=image_id)
+        task.set_resources({task_resources})
+
     _execute(
         entrypoint=entrypoint,
         dryrun=dryrun,
@@ -442,7 +481,6 @@ def launch(
         detach_run=detach_run,
         idle_minutes_to_autostop=idle_minutes_to_autostop,
         no_setup=no_setup,
-        clone_disk_from=clone_disk_from,
         _is_launched_by_spot_controller=_is_launched_by_spot_controller,
     )
 

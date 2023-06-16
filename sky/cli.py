@@ -748,66 +748,7 @@ def _launch_with_confirm(
     _check_resources_match(backend, cluster, task, node_type=node_type)
 
     if clone_disk_from is not None:
-        # TODO(zhwu): Support clone_disk_from in the programmatic API as well.
-        source_cluster_status, handle = backend_utils.refresh_cluster_status_handle(
-            clone_disk_from)
-        if not isinstance(backend, backends.CloudVmRayBackend):
-            raise click.UsageError('Cannot clone disk to a non-cloud cluster.')
-        if not isinstance(handle, backends.CloudVmRayResourceHandle):
-            raise click.UsageError(
-                'Cannot clone disk from a non-cloud cluster.')
-
-        if source_cluster_status is None:
-            raise click.UsageError('Cannot find cluster to clone disk from.')
-        if source_cluster_status != status_lib.ClusterStatus.STOPPED:
-            raise click.UsageError(
-                'Cannot clone disk from a RUNNING cluster. Please stop the '
-                f'cluster first: sky stop {clone_disk_from}.')
-        assert len(task.resources) == 1, task.resources
-        task_resources = list(task.resources.values())[0]
-        override_param = {}
-        original_cloud = handle.launched_resources.cloud
-        if task_resources.cloud is None:
-            override_param['cloud'] = original_cloud
-        else:
-            if not task_resources.cloud.is_same_cloud(original_cloud):
-                raise click.UsageError(
-                    f'Cannot clone disk across cloud from {original_cloud} to '
-                    f'{task_resources.cloud}.')
-        original_cloud.check_features_are_supported(
-            {clouds.CloudImplementationFeatures.MIGRATE_DISK})
-
-        if task_resources.region is None:
-            override_param['region'] = handle.launched_resources.region
-
-        logger.info(
-            f'No cloud/region specified for the task. Using the same region '
-            f'as source cluster {clone_disk_from!r}: '
-            f'{handle.launched_resources.cloud}'
-            f'({handle.launched_resources.region}).')
-        task_resources = task_resources.copy(**override_param)
-
-        with log_utils.rich_console(
-                f'Creating image from source cluster {clone_disk_from!r}'
-        ) as console:
-            image_id = original_cloud.create_image_from_cluster(
-                clone_disk_from,
-                backend_utils.tag_filter_for_cluster(clone_disk_from),
-                region=handle.launched_resources.region,
-            )
-            if task_resources.region != handle.launched_resources.region:
-                console.update(
-                    f'Migrating image {image_id} to target region {task_resources.region}...'
-                )
-                image_id = original_cloud.copy_image(
-                    image_id,
-                    source_region=handle.launched_resources.region,
-                    source_zone=handle.launched_resources.zone,
-                    target_region=task_resources.region,
-                    target_zone=task_resources.zone)
-        click.echo('Image created successfully.')
-        task_resources = task_resources.copy(image_id=image_id)
-        task.set_resources({task_resources})
+        backend_utils.check_clone_disk_and_override_task(clone_disk_from, task)
 
     confirm_shown = False
     if not no_confirm:
@@ -1430,7 +1371,8 @@ def launch(
                          idle_minutes_to_autostop=idle_minutes_to_autostop,
                          down=down,
                          retry_until_up=retry_until_up,
-                         no_setup=no_setup)
+                         no_setup=no_setup,
+                         clone_disk_from=clone_disk_from)
 
 
 @cli.command(cls=_DocumentedCodeCommand)

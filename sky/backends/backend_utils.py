@@ -1592,44 +1592,6 @@ def check_network_connection():
                                               'Network seems down.') from e
 
 
-def _create_image_aws(cluster: str, ray_config: Dict[str, Any]) -> str:
-    """Create a image for the cluster on AWS and returns the image id."""
-    region = ray_config['provider']['region']
-    image_name = f'skypilot-{cluster}-{int(time.time())}'
-    query_instance_id_cmd = (
-        f'aws ec2 describe-instances --region {region} --filters '
-        f'Name=tag:ray-cluster-name,Values={cluster} '
-        'Name=tag:ray-node-type,Values=Head '
-        '--query "Reservations[*].Instances[*].InstanceId" '
-        '--output text')
-    returncode, stdout, stderr = log_lib.run_with_log(query_instance_id_cmd,
-                                                      '/dev/null',
-                                                      require_outputs=True,
-                                                      shell=True)
-    subprocess_utils.handle_returncode(returncode,
-                                       query_instance_id_cmd,
-                                       error_msg='Failed to query instance id.',
-                                       stderr=stderr)
-    instance_id = stdout.strip()
-    if not instance_id:
-        raise
-    create_image_cmd = (
-        f'aws ec2 create-image --region {region} --instance-id {instance_id} '
-        f'--name {image_name} --output text')
-    returncode, stdout, stderr = log_lib.run_with_log(create_image_cmd,
-                                                      '/dev/null',
-                                                      require_outputs=True,
-                                                      shell=True)
-    subprocess_utils.handle_returncode(returncode,
-                                       create_image_cmd,
-                                       error_msg='Failed to create image.',
-                                       stderr=stderr)
-    image_id = stdout.strip()
-    if not image_id:
-        raise
-    return image_id
-
-
 def check_owner_identity(cluster_name: str) -> None:
     """Check if current user is the same as the user who created the cluster.
 
@@ -1700,7 +1662,7 @@ def check_owner_identity(cluster_name: str) -> None:
                 f'is {current_user_identity!r}.')
 
 
-def tag_filter_for_cluster(cluster_name: str) -> Dict[str.str]:
+def tag_filter_for_cluster(cluster_name: str) -> Dict[str, str]:
     """Returns a tag filter for the cluster."""
     return {
         'ray-cluster-name': cluster_name,
@@ -1742,6 +1704,70 @@ def _query_cluster_status_via_cloud_api(
                                  post_teardown_cleanup=False,
                                  refresh_cluster_status=False)
     return node_statuses
+
+
+def check_clone_disk_and_override_task(
+    cluster_name: str, task: 'task_lib.Task'
+) -> Tuple['task_lib.Task', 'cloud_vm_ray_backend.CloudVmRayResourceHandle']:
+    """Check if the task is compatible to clone disk from the source cluster.
+
+    Args:
+        cluster_name: The name of the cluster to clone disk from.
+        task: The task to check.
+        backend: The backend to use.
+
+    Returns:
+        The task to use and the resource handle of the source cluster.
+
+    Raises:
+        exceptions.NotSupportedError: If the source cluster is not valid or the
+            task is not compatible to clone disk from the source cluster.
+    """
+    source_cluster_status, handle = refresh_cluster_status_handle(cluster_name)
+
+    if source_cluster_status is None:
+        with ux_utils.print_exception_no_traceback():
+            raise ValueError(
+                f'Cannot find cluster {cluster_name!r} to clone disk from.')
+
+    if not isinstance(handle, backends.CloudVmRayResourceHandle):
+        with ux_utils.print_exception_no_traceback():
+            raise exceptions.NotSupportedError(
+                f'Cannot clone disk from a non-cloud cluster {cluster_name!r}.')
+
+    if source_cluster_status != status_lib.ClusterStatus.STOPPED:
+        with ux_utils.print_exception_no_traceback():
+            raise exceptions.NotSupportedError(
+                'Cannot clone disk from a RUNNING cluster. Please stop the '
+                f'cluster first: sky stop {cluster_name}.')
+
+    assert len(task.resources) == 1, task.resources
+    task_resources = list(task.resources)[0]
+    override_param = {}
+    original_cloud = handle.launched_resources.cloud
+    if task_resources.cloud is not None:
+        override_param['cloud'] = original_cloud
+    else:
+        if not original_cloud.is_same_cloud(task_resources.cloud):
+            with ux_utils.print_exception_no_traceback():
+                raise ValueError(
+                    f'Cannot clone disk across cloud from {original_cloud} to '
+                    f'{task_resources.cloud}.')
+    original_cloud.check_features_are_supported(
+        {clouds.CloudImplementationFeatures.MIGRATE_DISK})
+
+    if task_resources.region is None:
+        override_param['region'] = handle.launched_resources.region
+
+    if override_param:
+        logger.info(
+            f'No cloud/region specified for the task. Using the same region '
+            f'as source cluster {cluster_name!r}: '
+            f'{handle.launched_resources.cloud}'
+            f'({handle.launched_resources.region}).')
+        task_resources = task_resources.copy(**override_param)
+        task.set_resources({task_resources})
+    return task, handle
 
 
 def _update_cluster_status_no_lock(
