@@ -121,7 +121,6 @@ def _execute(
     detach_run: bool = False,
     idle_minutes_to_autostop: Optional[int] = None,
     no_setup: bool = False,
-    clone_disk_from: Optional[str] = None,
     # Internal only:
     # pylint: disable=invalid-name
     _is_launched_by_spot_controller: bool = False,
@@ -190,8 +189,6 @@ def _execute(
 
     if task.num_nodes > 1:
         requested_features.add(clouds.CloudImplementationFeatures.MULTI_NODE)
-    if clone_disk_from is not None:
-        requested_features.add(clouds.CloudImplementationFeatures.MIGRATE_DISK)
 
     backend = backend if backend is not None else backends.CloudVmRayBackend()
     if isinstance(backend, backends.CloudVmRayBackend):
@@ -344,7 +341,6 @@ def launch(
     detach_setup: bool = False,
     detach_run: bool = False,
     no_setup: bool = False,
-    clone_disk_from: Optional[str] = None,
     # Internal only:
     # pylint: disable=invalid-name
     _is_launched_by_spot_controller: bool = False,
@@ -431,6 +427,7 @@ def launch(
     entrypoint = task
     backend_utils.check_cluster_name_not_reserved(cluster_name,
                                                   operation_str='sky.launch')
+
     _execute(
         entrypoint=entrypoint,
         dryrun=dryrun,

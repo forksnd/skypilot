@@ -1700,6 +1700,13 @@ def check_owner_identity(cluster_name: str) -> None:
                 f'is {current_user_identity!r}.')
 
 
+def tag_filter_for_cluster(cluster_name: str) -> Dict[str.str]:
+    """Returns a tag filter for the cluster."""
+    return {
+        'ray-cluster-name': cluster_name,
+    }
+
+
 def _query_cluster_status_via_cloud_api(
     handle: 'cloud_vm_ray_backend.CloudVmRayResourceHandle'
 ) -> List[status_lib.ClusterStatus]:
@@ -1718,8 +1725,7 @@ def _query_cluster_status_via_cloud_api(
 
     # Query the cloud provider.
     node_statuses = handle.launched_resources.cloud.query_status(
-        cluster_name, {'ray-cluster-name': cluster_name}, region, zone,
-        **kwargs)
+        cluster_name, tag_filter_for_cluster, region, zone, **kwargs)
     # GCP does not clean up preempted TPU VMs. We remove it ourselves.
     # TODO(wei-lin): handle multi-node cases.
     if kwargs.get('use_tpu_vm', False) and len(node_statuses) == 0:

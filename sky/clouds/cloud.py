@@ -475,8 +475,11 @@ class Cloud:
                      **kwargs) -> List['status_lib.ClusterStatus']:
         raise NotImplementedError
 
-    def create_image_from_cluster(cls, name: str, tag_filters: Dict[str, str],
-                                  region: Optional[str], zone: Optional[str],
+    def create_image_from_cluster(cls,
+                                  name: str,
+                                  tag_filters: Dict[str, str],
+                                  region: Optional[str],
+                                  zone: Optional[str] = None,
                                   **kwargs) -> str:
         raise NotImplementedError
 

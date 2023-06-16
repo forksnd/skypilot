@@ -760,7 +760,7 @@ class AWS(clouds.Cloud):
 
     @classmethod
     def create_image_from_cluster(cls, name: str, tag_filters: Dict[str, str],
-                                  region: Optional[str], zone: Optional[str],
+                                  region: Optional[str], zone: Optional[str]=None,
                                   **kwargs) -> str:
         del zone, kwargs  # unused
         assert region is not None, (tag_filters, region)
@@ -800,6 +800,19 @@ class AWS(clouds.Cloud):
             stream_logs=False)
 
         image_id = stdout.strip()
+        # Wait for the image to be available
+        wait_image_cmd = (
+            f'aws ec2 wait image-available --region {region} --image-ids {image_id}')
+        returncode, stdout, stderr = log_lib.run_with_log(wait_image_cmd,
+                                                            '/dev/null',
+                                                            require_outputs=True,
+                                                            shell=True)
+        subprocess_utils.handle_returncode(
+            returncode,
+            wait_image_cmd,
+            error_msg=f'The image {image_id!r} creation fails to complete.',
+            stderr=stderr,
+            stream_logs=False)
         return image_id
 
     @classmethod
