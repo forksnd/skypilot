@@ -441,7 +441,7 @@ def launch(
                 entrypoint = entrypoint.tasks[0]
         assert isinstance(entrypoint, sky.Task), entrypoint
         task, handle = backend_utils.check_clone_disk_and_override_task(
-            clone_disk_from, entrypoint)
+            clone_disk_from, cluster_name, entrypoint)
         original_cloud = handle.launched_resources.cloud
         task_resources = list(task.resources)[0]
 
@@ -469,7 +469,8 @@ def launch(
             f'Image {image_id!r} created successfully. Overriding task '
             f'image_id.')
         task_resources = task_resources.copy(image_id=image_id)
-        task.set_resources({task_resources})
+        task.set_resources(task_resources)
+        logger.debug(f'Overridden task resources: {task.resources}')
         entrypoint = task
 
     _execute(
