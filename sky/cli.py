@@ -752,7 +752,7 @@ def _launch_with_confirm(
             clone_disk_from)
         if source_cluster_status is None:
             raise click.UsageError('Cannot find cluster to clone disk from.')
-        if source_cluster_status != global_user_state.ClusterStatus.STOPPED:
+        if source_cluster_status != status_lib.ClusterStatus.STOPPED:
             raise click.UsageError(
                 'Cannot clone disk from a RUNNING cluster. Please stop the '
                 f'cluster first: sky stop {clone_disk_from}.')

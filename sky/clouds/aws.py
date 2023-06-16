@@ -697,10 +697,10 @@ class AWS(clouds.Cloud):
         }
 
     @classmethod
-    def _query_and_retry(cls, tag_filters: Dict[str, str], region: str, query: str) -> Tuple[int, str, str]:
-        assert region is not None, (tag_filters, region)
+    def _query_and_retry(cls, tag_filters: Dict[str, str], region: str,
+                         query: str) -> Tuple[int, str, str]:
         filter_str = ' '.join(f'Name=tag:{key},Values={value}'
-                        for key, value in tag_filters.items())
+                              for key, value in tag_filters.items())
         query_cmd = (f'aws ec2 describe-instances --filters {filter_str} '
                      f'--region {region} --query {query} --output json')
         retry_cnt = 0
@@ -739,7 +739,9 @@ class AWS(clouds.Cloud):
             'terminated': None,
         }
 
-        returncode, stdout, stderr = cls._query_and_retry(tag_filters, region, query='Reservations[].Instances[].State.Name')
+        assert region is not None, (tag_filters, region)
+        returncode, stdout, stderr = cls._query_and_retry(
+            tag_filters, region, query='Reservations[].Instances[].State.Name')
 
         if returncode != 0:
             with ux_utils.print_exception_no_traceback():
@@ -757,13 +759,22 @@ class AWS(clouds.Cloud):
         return statuses
 
     @classmethod
-    def create_image_from_cluster(cls, name: str, tag_filters: Dict[str, str], region: Optional[str], zone: Optional[str], **kwargs) -> str:
+    def create_image_from_cluster(cls, name: str, tag_filters: Dict[str, str],
+                                  region: Optional[str], zone: Optional[str],
+                                  **kwargs) -> str:
         del zone, kwargs  # unused
+        assert region is not None, (tag_filters, region)
         image_name = f'skypilot-{name}-{int(time.time())}'
-        returncode, stdout, stderr = cls._query_and_retry(tag_filters, region, query='Reservations[].Instances[].InstanceId')
+        returncode, stdout, stderr = cls._query_and_retry(
+            tag_filters, region, query='Reservations[].Instances[].InstanceId')
 
-        subprocess_utils.handle_returncode(returncode, '', error_msg='Failed to find the source cluster on AWS.', stderr=stderr, stream_logs=False)
-        
+        subprocess_utils.handle_returncode(
+            returncode,
+            '',
+            error_msg='Failed to find the source cluster on AWS.',
+            stderr=stderr,
+            stream_logs=False)
+
         instance_ids = json.loads(stdout.strip())
         if len(instance_ids) != 1:
             with ux_utils.print_exception_no_traceback():
@@ -773,12 +784,47 @@ class AWS(clouds.Cloud):
 
         instance_id = instance_ids[0]
         create_image_cmd = (
-                f'aws ec2 create-image --region {region} --instance-id {instance_id} '
-                f'--name {image_name} --output text')
+            f'aws ec2 create-image --region {region} --instance-id {instance_id} '
+            f'--name {image_name} --output text')
 
         returncode, stdout, stderr = log_lib.run_with_log(create_image_cmd,
-                                                        '/dev/null',
-                                                        require_outputs=True,
-                                                        shell=True)
-        subprocess_utils.handle_returncode(returncode, create_image_cmd, error_msg=f'Failed to create image from the source instance {instance_id}.', stderr=stderr, stream_logs=False)
-        subprocess_utils.handle_returncode(returncode, create_image_cmd, )
+                                                          '/dev/null',
+                                                          require_outputs=True,
+                                                          shell=True)
+        subprocess_utils.handle_returncode(
+            returncode,
+            create_image_cmd,
+            error_msg=
+            f'Failed to create image from the source instance {instance_id}.',
+            stderr=stderr,
+            stream_logs=False)
+
+        image_id = stdout.strip()
+        return image_id
+
+    @classmethod
+    def copy_image(cls, image_id: str, source_region: str,
+                   source_zone: Optional[str], target_region: str,
+                   target_zone: Optional[str], **kwargs) -> str:
+        del source_zone, target_zone, kwargs
+        image_name = f'skypilot-cloned-from-{source_region}-{int(time.time())}'
+        copy_image_cmd = (f'aws ec2 copy-image --name {image_name} '
+                          f'--source-image-id {image_id} '
+                          f'--source-region {source_region} '
+                          f'--region {target_region} --output text')
+        returncode, stdout, stderr = log_lib.run_with_log(copy_image_cmd,
+                                                          '/dev/null',
+                                                          require_outputs=True,
+                                                          shell=True)
+        subprocess_utils.handle_returncode(
+            returncode,
+            copy_image_cmd,
+            error_msg=
+            f'Failed to copy image {image_id!r} from {source_region} to {target_region}.',
+            stderr=stderr,
+            stream_logs=False)
+
+        target_image_id = stdout.strip()
+        # TODO(zhwu): add waiting logic to make sure the image is ready and have a spinner
+        # aws ec2 wait image-available --image-ids $NEW_IMAGE_ID --region $TARGET_REGION
+        return target_image_id

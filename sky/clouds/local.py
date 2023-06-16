@@ -31,7 +31,8 @@ class Local(clouds.Cloud):
         clouds.CloudImplementationFeatures.STOP:
             ('Local cloud does not support stopping instances.'),
         clouds.CloudImplementationFeatures.AUTOSTOP:
-            ('Local cloud does not support stopping instances.')
+            ('Local cloud does not support stopping instances.'),
+        clouds.CloudImplementationFeatures.MIGRATE_DISK: f'Migrating disk is not supported in Local.',
     }
 
     @classmethod
