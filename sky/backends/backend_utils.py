@@ -1776,6 +1776,7 @@ def check_clone_disk_and_override_task(
             f'({handle.launched_resources.region}).')
         task_resources = task_resources.copy(**override_param)
         task.set_resources({task_resources})
+        task.best_resources = None
     return task, handle
 
 

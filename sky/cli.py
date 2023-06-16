@@ -728,16 +728,17 @@ def _launch_with_confirm(
     clone_disk_from: Optional[str] = None,
 ):
     """Launch a cluster with a Task."""
-    with sky.Dag() as dag:
-        dag.add(task)
     if cluster is None:
         cluster = backend_utils.generate_cluster_name()
 
     clone_source_str = ''
     if clone_disk_from is not None:
         clone_source_str = f' from the disk of {clone_disk_from!r}'
-        backend_utils.check_clone_disk_and_override_task(
+        task, _ = backend_utils.check_clone_disk_and_override_task(
             clone_disk_from, cluster, task)
+
+    with sky.Dag() as dag:
+        dag.add(task)
 
     maybe_status, _ = backend_utils.refresh_cluster_status_handle(cluster)
     if maybe_status is None:

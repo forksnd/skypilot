@@ -470,6 +470,7 @@ def launch(
             f'image_id.')
         task_resources = task_resources.copy(image_id=image_id)
         task.set_resources(task_resources)
+        task.best_resources = None
         logger.debug(f'Overridden task resources: {task.resources}')
         entrypoint = task
 
