@@ -18,6 +18,7 @@ from sky.adaptors import aws
 from sky.clouds import service_catalog
 from sky.skylet import log_lib
 from sky.utils import common_utils
+from sky.utils import log_utils
 from sky.utils import subprocess_utils
 from sky.utils import ux_utils
 
@@ -143,7 +144,7 @@ class AWS(clouds.Cloud):
             for r in regions:
                 assert r.zones is not None, r
                 r.set_zones([z for z in r.zones if z.name == zone])
-            regions = [r for r in regions if r.zones]
+        regions = [r for r in regions if r.zones]
         return regions
 
     @classmethod
@@ -759,13 +760,9 @@ class AWS(clouds.Cloud):
         return statuses
 
     @classmethod
-    def create_image_from_cluster(cls,
-                                  name: str,
-                                  tag_filters: Dict[str, str],
-                                  region: Optional[str],
-                                  zone: Optional[str] = None,
-                                  **kwargs) -> str:
-        del zone, kwargs  # unused
+    def create_image_from_cluster(cls, name: str, tag_filters: Dict[str, str],
+                                  region: Optional[str], **kwargs) -> str:
+        del kwargs  # unused
         assert region is not None, (tag_filters, region)
         image_name = f'skypilot-{name}-{int(time.time())}'
         returncode, stdout, stderr = cls._query_and_retry(
@@ -802,6 +799,9 @@ class AWS(clouds.Cloud):
             stderr=stderr,
             stream_logs=False)
 
+        log_utils.force_update_rich_status(
+            f'Waiting for the source image from {name!r} to be available on AWS.'
+        )
         image_id = stdout.strip()
         # Wait for the image to be available
         wait_image_cmd = (
@@ -814,16 +814,18 @@ class AWS(clouds.Cloud):
         subprocess_utils.handle_returncode(
             returncode,
             wait_image_cmd,
-            error_msg=f'The image {image_id!r} creation fails to complete.',
+            error_msg=
+            f'The source image {image_id!r} creation fails to complete.',
             stderr=stderr,
             stream_logs=False)
+        sky_logging.print(
+            f'The source image {image_id!r} is created successfully.')
         return image_id
 
     @classmethod
-    def copy_image(cls, image_id: str, source_region: str,
-                   source_zone: Optional[str], target_region: str,
-                   target_zone: Optional[str], **kwargs) -> str:
-        del source_zone, target_zone, kwargs
+    def copy_image(cls, image_id: str, source_region: str, target_region: str,
+                   **kwargs) -> str:
+        del kwargs
         image_name = f'skypilot-cloned-from-{source_region}-{int(time.time())}'
         copy_image_cmd = (f'aws ec2 copy-image --name {image_name} '
                           f'--source-image-id {image_id} '
@@ -842,6 +844,38 @@ class AWS(clouds.Cloud):
             stream_logs=False)
 
         target_image_id = stdout.strip()
-        # TODO(zhwu): add waiting logic to make sure the image is ready and have a spinner
-        # aws ec2 wait image-available --image-ids $NEW_IMAGE_ID --region $TARGET_REGION
+        wait_image_cmd = (
+            f'aws ec2 wait image-available --region {target_region} --image-ids {target_image_id}'
+        )
+        log_utils.force_update_rich_status(
+            'Waiting for the target image to be available on AWS.')
+        returncode, stdout, stderr = log_lib.run_with_log(wait_image_cmd,
+                                                          '/dev/null',
+                                                          require_outputs=True,
+                                                          shell=True)
+        subprocess_utils.handle_returncode(
+            returncode,
+            wait_image_cmd,
+            error_msg=
+            f'The target image {target_image_id!r} creation fails to complete.',
+            stderr=stderr,
+            stream_logs=False)
+        sky_logging.print(
+            f'The target image {target_image_id!r} is created successfully.')
         return target_image_id
+
+    @classmethod
+    def delete_image(cls, image_id: str, region: Optional[str]) -> None:
+        assert region is not None, (image_id, region)
+        delete_image_cmd = (f'aws ec2 deregister-image --region {region} '
+                            f'--image-id {image_id}')
+        returncode, _, stderr = log_lib.run_with_log(delete_image_cmd,
+                                                     '/dev/null',
+                                                     require_outputs=True,
+                                                     shell=True)
+        subprocess_utils.handle_returncode(
+            returncode,
+            delete_image_cmd,
+            error_msg=f'Failed to delete image {image_id!r} from {region}.',
+            stderr=stderr,
+            stream_logs=False)

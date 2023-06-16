@@ -446,26 +446,30 @@ def launch(
         task_resources = list(task.resources)[0]
 
         with log_utils.safe_rich_status('Creating image from source cluster '
-                                        f'{clone_disk_from!r}') as console:
+                                        f'{clone_disk_from!r}'):
             image_id = original_cloud.create_image_from_cluster(
                 clone_disk_from,
                 backend_utils.tag_filter_for_cluster(clone_disk_from),
                 region=handle.launched_resources.region,
             )
             if task_resources.region != handle.launched_resources.region:
-                console.update(f'Migrating image {image_id} to target region '
-                               f'{task_resources.region}...')
+                log_utils.force_update_rich_status(
+                    f'Migrating image {image_id} to target region '
+                    f'{task_resources.region}...')
                 image_id = original_cloud.copy_image(
                     image_id,
                     source_region=handle.launched_resources.region,
                     source_zone=handle.launched_resources.zone,
                     target_region=task_resources.region,
                     target_zone=task_resources.zone)
+                original_cloud.delete_image(
+                    image_id, region=handle.launched_resources.region)
         sky_logging.print(
             f'Image {image_id!r} created successfully. Overriding task '
-            f'image_id to {image_id!r}')
+            f'image_id.')
         task_resources = task_resources.copy(image_id=image_id)
         task.set_resources({task_resources})
+        entrypoint = task
 
     _execute(
         entrypoint=entrypoint,

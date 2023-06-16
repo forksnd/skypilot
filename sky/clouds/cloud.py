@@ -476,20 +476,17 @@ class Cloud:
         raise NotImplementedError
 
     @classmethod
-    def create_image_from_cluster(cls,
-                                  name: str,
-                                  tag_filters: Dict[str, str],
-                                  region: Optional[str],
-                                  zone: Optional[str] = None,
-                                  **kwargs) -> str:
+    def create_image_from_cluster(cls, name: str, tag_filters: Dict[str, str],
+                                  region: Optional[str], **kwargs) -> str:
         raise NotImplementedError
 
     @classmethod
-    def move_image(cls, image_name: str, region: str) -> None:
+    def move_image(cls, image_name: str, source_region: str,
+                   target_region: str) -> None:
         raise NotImplementedError
 
     @classmethod
-    def delete_image(cls, image_id: str) -> None:
+    def delete_image(cls, image_id: str, region: Optional[str]) -> None:
         raise NotImplementedError
 
     def __repr__(self):

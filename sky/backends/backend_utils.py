@@ -1745,7 +1745,7 @@ def check_clone_disk_and_override_task(
     task_resources = list(task.resources)[0]
     override_param = {}
     original_cloud = handle.launched_resources.cloud
-    if task_resources.cloud is not None:
+    if task_resources.cloud is None:
         override_param['cloud'] = original_cloud
     else:
         if not original_cloud.is_same_cloud(task_resources.cloud):
