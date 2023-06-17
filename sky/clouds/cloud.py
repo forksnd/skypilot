@@ -482,8 +482,12 @@ class Cloud:
 
     @classmethod
     def maybe_move_image(cls, image_name: str, source_region: str,
-                   target_region: str) -> None:
-        """Move an image if the target region cannot find it."""
+                         target_region: str, source_zone: Optional[str],
+                         target_zone: Optional[str]) -> str:
+        """Move an image if the target region cannot find it.
+
+        Returns: the image ID in the target region.
+        """
         raise NotImplementedError
 
     @classmethod

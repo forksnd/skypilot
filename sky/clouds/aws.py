@@ -823,9 +823,10 @@ class AWS(clouds.Cloud):
         return image_id
 
     @classmethod
-    def maybe_move_image(cls, image_id: str, source_region: str, target_region: str,
-                   **kwargs) -> str:
-        del kwargs
+    def maybe_move_image(cls, image_id: str, source_region: str,
+                         target_region: str, source_zone: Optional[str],
+                         target_zone: Optional[str]) -> str:
+        del source_zone, target_zone  # unused
         if source_region == target_region:
             return image_id
         image_name = f'skypilot-cloned-from-{source_region}-{int(time.time())}'
@@ -850,7 +851,8 @@ class AWS(clouds.Cloud):
             f'aws ec2 wait image-available --region {target_region} --image-ids {target_image_id}'
         )
         log_utils.force_update_rich_status(
-            f'Waiting for the target image on {target_region} to be available on AWS.')
+            f'Waiting for the target image on {target_region} to be available on AWS.'
+        )
         returncode, stdout, stderr = log_lib.run_with_log(wait_image_cmd,
                                                           '/dev/null',
                                                           require_outputs=True,
@@ -864,7 +866,7 @@ class AWS(clouds.Cloud):
             stream_logs=False)
         sky_logging.print(
             f'The target image {target_image_id!r} is created successfully.')
-        
+
         log_utils.force_update_rich_status('Deleting the source image.')
         cls.delete_image(image_id, source_region)
         return target_image_id

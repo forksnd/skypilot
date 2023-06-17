@@ -464,7 +464,10 @@ def launch(
             image_id = original_cloud.maybe_move_image(
                 image_id,
                 source_region=source_region,
-                target_region=target_region)
+                target_region=target_region,
+                source_zone=handle.launched_resources.zone,
+                target_zone=task_resources.zone,
+            )
         sky_logging.print(
             f'Image {image_id!r} created successfully. Overriding task '
             f'image_id.')
