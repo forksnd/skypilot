@@ -832,7 +832,8 @@ class AWS(clouds.Cloud):
         )
 
         log_utils.force_update_rich_status(
-            f'Waiting for the target image on {target_region} to be available on AWS.'
+            f'Waiting for the target image {target_image_id!r} on {target_region} to be '
+            'available on AWS.'
         )
         wait_image_cmd = (
             f'aws ec2 wait image-available --region {target_region} --image-ids {target_image_id}'
