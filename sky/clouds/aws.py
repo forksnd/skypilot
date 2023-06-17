@@ -841,6 +841,7 @@ class AWS(clouds.Cloud):
             wait_image_cmd,
             error_msg=
             f'The target image {target_image_id!r} creation fails to complete.',
+            max_retry=5,
         )
 
         sky_logging.print(

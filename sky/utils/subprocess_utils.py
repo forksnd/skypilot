@@ -122,14 +122,16 @@ def kill_children_processes(first_pid_to_kill: Optional[int] = None,
             pass
 
 
-def run_and_retry_for_disconnection(cmd, error_msg):
+def run_and_retry_for_disconnection(cmd: str,
+                                    error_msg: str,
+                                    max_retry: int = 3):
     retry_cnt = 0
     while True:
         returncode, stdout, stderr = log_lib.run_with_log(cmd,
                                                           '/dev/null',
                                                           require_outputs=True,
                                                           shell=True)
-        if retry_cnt < 3 and returncode == 255:
+        if retry_cnt < max_retry and returncode == 255:
             retry_cnt += 1
             time.sleep(random.uniform(0, 1) * 2)
             continue
