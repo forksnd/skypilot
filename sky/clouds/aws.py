@@ -800,7 +800,7 @@ class AWS(clouds.Cloud):
             stream_logs=False)
 
         log_utils.force_update_rich_status(
-            f'Waiting for the source image from {name!r} to be available on AWS.'
+            f'Waiting for the source image {name!r} from {region} to be available on AWS.'
         )
         image_id = stdout.strip()
         # Wait for the image to be available
@@ -850,7 +850,7 @@ class AWS(clouds.Cloud):
             f'aws ec2 wait image-available --region {target_region} --image-ids {target_image_id}'
         )
         log_utils.force_update_rich_status(
-            'Waiting for the target image to be available on AWS.')
+            f'Waiting for the target image on {target_region} to be available on AWS.')
         returncode, stdout, stderr = log_lib.run_with_log(wait_image_cmd,
                                                           '/dev/null',
                                                           require_outputs=True,
