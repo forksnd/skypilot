@@ -823,9 +823,11 @@ class AWS(clouds.Cloud):
         return image_id
 
     @classmethod
-    def copy_image(cls, image_id: str, source_region: str, target_region: str,
+    def maybe_move_image(cls, image_id: str, source_region: str, target_region: str,
                    **kwargs) -> str:
         del kwargs
+        if source_region == target_region:
+            return image_id
         image_name = f'skypilot-cloned-from-{source_region}-{int(time.time())}'
         copy_image_cmd = (f'aws ec2 copy-image --name {image_name} '
                           f'--source-image-id {image_id} '
@@ -862,6 +864,9 @@ class AWS(clouds.Cloud):
             stream_logs=False)
         sky_logging.print(
             f'The target image {target_image_id!r} is created successfully.')
+        
+        log_utils.force_update_rich_status('Deleting the source image.')
+        cls.delete_image(image_id, source_region)
         return target_image_id
 
     @classmethod

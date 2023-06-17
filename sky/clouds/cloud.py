@@ -481,8 +481,9 @@ class Cloud:
         raise NotImplementedError
 
     @classmethod
-    def move_image(cls, image_name: str, source_region: str,
+    def maybe_move_image(cls, image_name: str, source_region: str,
                    target_region: str) -> None:
+        """Move an image if the target region cannot find it."""
         raise NotImplementedError
 
     @classmethod
