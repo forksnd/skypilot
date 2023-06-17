@@ -786,38 +786,24 @@ class AWS(clouds.Cloud):
         create_image_cmd = (
             f'aws ec2 create-image --region {region} --instance-id {instance_id} '
             f'--name {image_name} --output text')
-
-        returncode, stdout, stderr = log_lib.run_with_log(create_image_cmd,
-                                                          '/dev/null',
-                                                          require_outputs=True,
-                                                          shell=True)
-        subprocess_utils.handle_returncode(
-            returncode,
+        image_id = subprocess_utils.run_and_retry_for_disconnection(
             create_image_cmd,
             error_msg=
             f'Failed to create image from the source instance {instance_id}.',
-            stderr=stderr,
-            stream_logs=False)
+        )
 
         log_utils.force_update_rich_status(
             f'Waiting for the source image {name!r} from {region} to be available on AWS.'
         )
-        image_id = stdout.strip()
         # Wait for the image to be available
         wait_image_cmd = (
             f'aws ec2 wait image-available --region {region} --image-ids {image_id}'
         )
-        returncode, stdout, stderr = log_lib.run_with_log(wait_image_cmd,
-                                                          '/dev/null',
-                                                          require_outputs=True,
-                                                          shell=True)
-        subprocess_utils.handle_returncode(
-            returncode,
+        subprocess_utils.run_and_retry_for_disconnection(
             wait_image_cmd,
             error_msg=
             f'The source image {image_id!r} creation fails to complete.',
-            stderr=stderr,
-            stream_logs=False)
+        )
         sky_logging.print(
             f'The source image {image_id!r} is created successfully.')
         return image_id
@@ -834,36 +820,24 @@ class AWS(clouds.Cloud):
                           f'--source-image-id {image_id} '
                           f'--source-region {source_region} '
                           f'--region {target_region} --output text')
-        returncode, stdout, stderr = log_lib.run_with_log(copy_image_cmd,
-                                                          '/dev/null',
-                                                          require_outputs=True,
-                                                          shell=True)
-        subprocess_utils.handle_returncode(
-            returncode,
+        target_image_id = subprocess_utils.run_and_retry_for_disconnection(
             copy_image_cmd,
             error_msg=
-            f'Failed to copy image {image_id!r} from {source_region} to {target_region}.',
-            stderr=stderr,
-            stream_logs=False)
-
-        target_image_id = stdout.strip()
-        wait_image_cmd = (
-            f'aws ec2 wait image-available --region {target_region} --image-ids {target_image_id}'
+            f'Failed to copy image {image_id!r} from {source_region} to {target_region}.'
         )
+
         log_utils.force_update_rich_status(
             f'Waiting for the target image on {target_region} to be available on AWS.'
         )
-        returncode, stdout, stderr = log_lib.run_with_log(wait_image_cmd,
-                                                          '/dev/null',
-                                                          require_outputs=True,
-                                                          shell=True)
-        subprocess_utils.handle_returncode(
-            returncode,
+        wait_image_cmd = (
+            f'aws ec2 wait image-available --region {target_region} --image-ids {target_image_id}'
+        )
+        subprocess_utils.run_and_retry_for_disconnection(
             wait_image_cmd,
             error_msg=
             f'The target image {target_image_id!r} creation fails to complete.',
-            stderr=stderr,
-            stream_logs=False)
+        )
+
         sky_logging.print(
             f'The target image {target_image_id!r} is created successfully.')
 
@@ -876,13 +850,6 @@ class AWS(clouds.Cloud):
         assert region is not None, (image_id, region)
         delete_image_cmd = (f'aws ec2 deregister-image --region {region} '
                             f'--image-id {image_id}')
-        returncode, _, stderr = log_lib.run_with_log(delete_image_cmd,
-                                                     '/dev/null',
-                                                     require_outputs=True,
-                                                     shell=True)
-        subprocess_utils.handle_returncode(
-            returncode,
+        subprocess_utils.run_and_retry_for_disconnection(
             delete_image_cmd,
-            error_msg=f'Failed to delete image {image_id!r} from {region}.',
-            stderr=stderr,
-            stream_logs=False)
+            error_msg=f'Failed to delete image {image_id!r} from {region}.')
