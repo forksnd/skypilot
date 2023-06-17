@@ -698,8 +698,12 @@ class AWS(clouds.Cloud):
         }
 
     @classmethod
-    def _query_and_retry(cls, tag_filters: Dict[str, str], region: str,
-                         query: str) -> Tuple[int, str, str]:
+    def _query_instance_property_and_retry(
+        cls,
+        tag_filters: Dict[str, str],
+        region: str,
+        query: str,
+    ) -> Tuple[int, str, str]:
         filter_str = ' '.join(f'Name=tag:{key},Values={value}'
                               for key, value in tag_filters.items())
         query_cmd = (f'aws ec2 describe-instances --filters {filter_str} '
@@ -716,7 +720,8 @@ class AWS(clouds.Cloud):
 
             if (returncode != 0 and
                     'Unable to locate credentials. You can configure credentials by '
-                    'running "aws configure"' in stdout + stderr):
+                    'running "aws configure"'
+                    in stdout + stderr) or returncode == 255:
                 retry_cnt += 1
                 time.sleep(random.uniform(0, 1) * 2)
                 continue
@@ -741,7 +746,7 @@ class AWS(clouds.Cloud):
         }
 
         assert region is not None, (tag_filters, region)
-        returncode, stdout, stderr = cls._query_and_retry(
+        returncode, stdout, stderr = cls._query_instance_property_and_retry(
             tag_filters, region, query='Reservations[].Instances[].State.Name')
 
         if returncode != 0:
@@ -765,7 +770,7 @@ class AWS(clouds.Cloud):
         del kwargs  # unused
         assert region is not None, (tag_filters, region)
         image_name = f'skypilot-{name}-{int(time.time())}'
-        returncode, stdout, stderr = cls._query_and_retry(
+        returncode, stdout, stderr = cls._query_instance_property_and_retry(
             tag_filters, region, query='Reservations[].Instances[].InstanceId')
 
         subprocess_utils.handle_returncode(
