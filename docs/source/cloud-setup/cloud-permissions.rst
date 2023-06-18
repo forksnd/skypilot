@@ -226,3 +226,13 @@ Optionally, to use TPUs, add the following role:
   roles/tpu.admin
 
 You can grant those accesses via the `GCP IAM console <https://console.cloud.google.com/iam-admin/iam>`_.
+
+[Optional] To allow ``--clone-disk-from`` to work, you need to have the following permissions for the role as well.
+
+.. code-block:: text
+
+    compute.disks.useReadOnly
+    compute.images.create
+    compute.images.get
+    compute.images.delete
+    
