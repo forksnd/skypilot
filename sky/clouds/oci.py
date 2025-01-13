@@ -1,25 +1,40 @@
-"""
-Oracle Cloud Infrastructure (OCI)
+"""Oracle Cloud Infrastructure (OCI)
 
 History:
  - Hysun He (hysun.he@oracle.com) @ Apr, 2023: Initial implementation
  - Hysun He (hysun.he@oracle.com) @ May 4, 2023: Support use the default
    image_id (configurable) if no image_id specified in the task yaml.
+ - Hysun He (hysun.he@oracle.com) @ Oct 12, 2024:
+   get_credential_file_mounts(): bug fix for sky config
+   file path resolution (by os.path.expanduser) when construct the file
+   mounts. This bug will cause the created workder nodes located in different
+   compartment and VCN than the header node if user specifies compartment_id
+   in the sky config file, because the ~/.sky/config is not sync-ed to the
+   remote machine.
+   The workaround is set the sky config file path using ENV before running
+   the sky launch: export SKYPILOT_CONFIG=/home/ubuntu/.sky/config.yaml
+ - Hysun He (hysun.he@oracle.com) @ Oct 12, 2024:
+   make_deploy_resources_variables(): Bug fix for specify the image_id as
+   the ocid of the image in the task.yaml file, in this case the image_id
+   for the node config should be set to the ocid instead of a dict.
+ - Hysun He (hysun.he@oracle.com) @ Oct 13, 2024:
+   Support more OS types additional to ubuntu for OCI resources.
 """
-import os
-import json
-import typing
 import logging
-from typing import Dict, Iterator, List, Optional, Tuple
+import os
+import typing
+from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 from sky import clouds
 from sky import exceptions
 from sky import status_lib
-from sky.clouds import service_catalog
-from sky.utils import common_utils
-from sky.utils import ux_utils
 from sky.adaptors import oci as oci_adaptor
-from sky.skylet.providers.oci.config import oci_conf
+from sky.clouds import service_catalog
+from sky.clouds.utils import oci_utils
+from sky.provision.oci.query_utils import query_helper
+from sky.utils import common_utils
+from sky.utils import resources_utils
+from sky.utils import ux_utils
 
 if typing.TYPE_CHECKING:
     # Renaming to avoid shadowing variables.
@@ -27,12 +42,12 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_tenancy_prefix = None
+_tenancy_prefix: Optional[str] = None
 
 
 @clouds.CLOUD_REGISTRY.register
 class OCI(clouds.Cloud):
-    """ OCI: Oracle Cloud Infrastructure """
+    """OCI: Oracle Cloud Infrastructure """
 
     _REPR = 'OCI'
 
@@ -42,16 +57,33 @@ class OCI(clouds.Cloud):
 
     _INDENT_PREFIX = '    '
 
-    @classmethod
-    def _cloud_unsupported_features(
-            cls) -> Dict[clouds.CloudImplementationFeatures, str]:
-        return {
-            clouds.CloudImplementationFeatures.CLONE_DISK_FROM_CLUSTER:
-                (f'Migrating disk is not supported in {cls._REPR}.'),
-        }
+    _SUPPORTED_DISK_TIERS = (set(resources_utils.DiskTier) -
+                             {resources_utils.DiskTier.ULTRA})
+    _BEST_DISK_TIER = resources_utils.DiskTier.HIGH
+
+    PROVISIONER_VERSION = clouds.ProvisionerVersion.SKYPILOT
+    STATUS_VERSION = clouds.StatusVersion.SKYPILOT
 
     @classmethod
-    def _max_cluster_name_length(cls) -> Optional[int]:
+    def _unsupported_features_for_resources(
+        cls, resources: 'resources_lib.Resources'
+    ) -> Dict[clouds.CloudImplementationFeatures, str]:
+        features = {
+            clouds.CloudImplementationFeatures.CLONE_DISK_FROM_CLUSTER:
+                (f'Migrating disk is currently not supported on {cls._REPR}.'),
+            clouds.CloudImplementationFeatures.DOCKER_IMAGE:
+                (f'Docker image is currently not supported on {cls._REPR}. '
+                 'You can try running docker command inside the '
+                 '`run` section in task.yaml.'),
+        }
+        if resources.use_spot:
+            features[clouds.CloudImplementationFeatures.STOP] = (
+                f'Stopping spot instances is currently not supported on '
+                f'{cls._REPR}.')
+        return features
+
+    @classmethod
+    def max_cluster_name_length(cls) -> Optional[int]:
         return cls._MAX_CLUSTER_NAME_LEN_LIMIT
 
     @classmethod
@@ -122,8 +154,9 @@ class OCI(clouds.Cloud):
         return 0.0
 
     def get_egress_cost(self, num_gigabytes: float) -> float:
-        """
-        https://www.oracle.com/cis/cloud/networking/pricing/
+        """Get the egress cost for the given number of gigabytes.
+
+        Reference: https://www.oracle.com/cis/cloud/networking/pricing/
         """
         # Free for first 10T (per month)
         if num_gigabytes <= 10 * 1024:
@@ -145,16 +178,13 @@ class OCI(clouds.Cloud):
         #     return 0.0
         return (num_gigabytes - 10 * 1024) * 0.0085
 
-    def is_same_cloud(self, other: clouds.Cloud) -> bool:
-        # Returns true if the two clouds are the same cloud type.
-        return isinstance(other, OCI)
-
     @classmethod
     def get_default_instance_type(
             cls,
             cpus: Optional[str] = None,
             memory: Optional[str] = None,
-            disk_tier: Optional[str] = None) -> Optional[str]:
+            disk_tier: Optional[resources_utils.DiskTier] = None
+    ) -> Optional[str]:
         return service_catalog.get_default_instance_type(cpus=cpus,
                                                          memory=memory,
                                                          disk_tier=disk_tier,
@@ -164,7 +194,7 @@ class OCI(clouds.Cloud):
     def get_accelerators_from_instance_type(
         cls,
         instance_type: str,
-    ) -> Optional[Dict[str, int]]:
+    ) -> Optional[Dict[str, Union[int, float]]]:
         return service_catalog.get_accelerators_from_instance_type(
             instance_type, clouds='oci')
 
@@ -173,33 +203,46 @@ class OCI(clouds.Cloud):
         return None
 
     def make_deploy_resources_variables(
-            self, resources: 'resources_lib.Resources',
+            self,
+            resources: 'resources_lib.Resources',
+            cluster_name: resources_utils.ClusterName,
             region: Optional['clouds.Region'],
-            zones: Optional[List['clouds.Zone']]) -> Dict[str, Optional[str]]:
+            zones: Optional[List['clouds.Zone']],
+            num_nodes: int,
+            dryrun: bool = False) -> Dict[str, Optional[str]]:
+        del cluster_name, dryrun  # Unused.
         assert region is not None, resources
 
         acc_dict = self.get_accelerators_from_instance_type(
             resources.instance_type)
-        if acc_dict is not None:
-            custom_resources = json.dumps(acc_dict, separators=(',', ':'))
-        else:
-            custom_resources = None
+        custom_resources = resources_utils.make_ray_custom_resources_str(
+            acc_dict)
 
         image_str = self._get_image_id(resources.image_id, region.name,
                                        resources.instance_type)
-        image_cols = image_str.split(oci_conf.IMAGE_TAG_SPERATOR)
+        image_cols = image_str.split(oci_utils.oci_config.IMAGE_TAG_SPERATOR)
         if len(image_cols) == 3:
             image_id = image_cols[0]
             listing_id = image_cols[1]
             res_ver = image_cols[2]
         else:
-            image_id = resources.image_id
+            # Oct.12,2024 by HysunHe: Bug fix - resources.image_id is an
+            # dict. The image_id here should be the ocid format.
+            image_id = image_str
             listing_id = None
             res_ver = None
 
+        os_type = None
+        if ':' in image_id:
+            # OS type provided in the --image-id. This is the case where
+            # custom image's ocid provided in the --image-id parameter.
+            #  - ocid1.image...aaa:oraclelinux (os type is oraclelinux)
+            #  - ocid1.image...aaa (OS not provided)
+            image_id, os_type = image_id.replace(' ', '').split(':')
+
         cpus = resources.cpus
         instance_type_arr = resources.instance_type.split(
-            oci_conf.INSTANCE_TYPE_RES_SPERATOR)
+            oci_utils.oci_config.INSTANCE_TYPE_RES_SPERATOR)
         instance_type = instance_type_arr[0]
 
         # Improvement:
@@ -218,8 +261,8 @@ class OCI(clouds.Cloud):
                     memory=mems,
                 )
             if cpus is None and resources.instance_type.startswith(
-                    oci_conf.VM_PREFIX):
-                cpus = f'{oci_conf.DEFAULT_NUM_VCPUS}'
+                    oci_utils.oci_config.VM_PREFIX):
+                cpus = f'{oci_utils.oci_config.DEFAULT_NUM_VCPUS}'
 
         zone = resources.zone
         if zone is None:
@@ -239,16 +282,18 @@ class OCI(clouds.Cloud):
         if _tenancy_prefix is None:
             try:
                 identity_client = oci_adaptor.get_identity_client(
-                    region=region.name, profile=oci_conf.get_profile())
+                    region=region.name,
+                    profile=oci_utils.oci_config.get_profile())
 
                 ad_list = identity_client.list_availability_domains(
                     compartment_id=oci_adaptor.get_oci_config(
-                        profile=oci_conf.get_profile())['tenancy']).data
+                        profile=oci_utils.oci_config.get_profile())
+                    ['tenancy']).data
 
                 first_ad = ad_list[0]
-                _tenancy_prefix = str(first_ad.name).split(':')[0]
-            except (oci_adaptor.get_oci().exceptions.ConfigFileNotFound,
-                    oci_adaptor.get_oci().exceptions.InvalidConfig) as e:
+                _tenancy_prefix = str(first_ad.name).split(':', maxsplit=1)[0]
+            except (oci_adaptor.oci.exceptions.ConfigFileNotFound,
+                    oci_adaptor.oci.exceptions.InvalidConfig) as e:
                 # This should only happen in testing where oci config is
                 # monkeypatched. In real use, if the OCI config is not
                 # valid, the 'sky check' would fail (OCI disabled).
@@ -260,10 +305,24 @@ class OCI(clouds.Cloud):
             cpus=None if cpus is None else float(cpus),
             disk_tier=resources.disk_tier)
 
+        if os_type is None:
+            # OS type is not determined yet. So try to get it from vms.csv
+            image_str = self._get_image_str(
+                image_id=resources.image_id,
+                instance_type=resources.instance_type,
+                region=region.name)
+
+            # pylint: disable=import-outside-toplevel
+            from sky.clouds.service_catalog import oci_catalog
+            os_type = oci_catalog.get_image_os_from_tag(tag=image_str,
+                                                        region=region.name)
+        logger.debug(f'OS type for the image {image_id} is {os_type}')
+
         return {
             'instance_type': instance_type,
             'custom_resources': custom_resources,
             'region': region.name,
+            'os_type': os_type,
             'cpus': str(cpus),
             'memory': resources.memory,
             'disk_size': resources.disk_size,
@@ -275,12 +334,15 @@ class OCI(clouds.Cloud):
             'use_spot': resources.use_spot
         }
 
-    def get_feasible_launchable_resources(self,
-                                          resources: 'resources_lib.Resources'):
+    def _get_feasible_launchable_resources(
+        self, resources: 'resources_lib.Resources'
+    ) -> 'resources_utils.FeasibleResources':
         if resources.instance_type is not None:
             assert resources.is_launchable(), resources
             resources = resources.copy(accelerators=None)
-            return ([resources], [])
+            # TODO: Add hints to all return values in this method to help
+            #  users understand why the resources are not launchable.
+            return resources_utils.FeasibleResources([resources], [], None)
 
         def _make(instance_list):
             resource_list = []
@@ -307,9 +369,10 @@ class OCI(clouds.Cloud):
                 disk_tier=resources.disk_tier)
 
             if default_instance_type is None:
-                return ([], [])
+                return resources_utils.FeasibleResources([], [], None)
             else:
-                return (_make([default_instance_type]), [])
+                return resources_utils.FeasibleResources(
+                    _make([default_instance_type]), [], None)
 
         assert len(accelerators) == 1, resources
 
@@ -325,9 +388,11 @@ class OCI(clouds.Cloud):
             zone=resources.zone,
             clouds='oci')
         if instance_list is None:
-            return ([], fuzzy_candidate_list)
+            return resources_utils.FeasibleResources([], fuzzy_candidate_list,
+                                                     None)
 
-        return (_make(instance_list), fuzzy_candidate_list)
+        return resources_utils.FeasibleResources(_make(instance_list),
+                                                 fuzzy_candidate_list, None)
 
     @classmethod
     def check_credentials(cls) -> Tuple[bool, Optional[str]]:
@@ -336,7 +401,7 @@ class OCI(clouds.Cloud):
         short_credential_help_str = (
             'For more details, refer to: '
             # pylint: disable=line-too-long
-            'https://skypilot.readthedocs.io/en/latest/getting-started/installation.html#oracle-cloud-infrastructure-oci'
+            'https://docs.skypilot.co/en/latest/getting-started/installation.html#oracle-cloud-infrastructure-oci'
         )
         credential_help_str = (
             'To configure credentials, go to: '
@@ -373,15 +438,16 @@ class OCI(clouds.Cloud):
 
         try:
             user = oci_adaptor.get_identity_client(
-                region=None, profile=oci_conf.get_profile()).get_user(
-                    oci_adaptor.get_oci_config(
-                        profile=oci_conf.get_profile())['user']).data
+                region=None,
+                profile=oci_utils.oci_config.get_profile()).get_user(
+                    oci_adaptor.get_oci_config(profile=oci_utils.oci_config.
+                                               get_profile())['user']).data
             del user
             # TODO[Hysun]: More privilege check can be added
             return True, None
-        except (oci_adaptor.get_oci().exceptions.ConfigFileNotFound,
-                oci_adaptor.get_oci().exceptions.InvalidConfig,
-                oci_adaptor.service_exception()) as e:
+        except (oci_adaptor.oci.exceptions.ConfigFileNotFound,
+                oci_adaptor.oci.exceptions.InvalidConfig,
+                oci_adaptor.oci.exceptions.ServiceError) as e:
             return False, (
                 f'OCI credential is not correctly set. '
                 f'Check the credential file at {conf_file}\n'
@@ -389,21 +455,42 @@ class OCI(clouds.Cloud):
                 f'{cls._INDENT_PREFIX}Error details: '
                 f'{common_utils.format_exception(e, use_bracket=True)}')
 
+    @classmethod
+    def check_disk_tier(
+            cls, instance_type: Optional[str],
+            disk_tier: Optional[resources_utils.DiskTier]) -> Tuple[bool, str]:
+        del instance_type  # Unused.
+        if disk_tier is None or disk_tier == resources_utils.DiskTier.BEST:
+            return True, ''
+        if disk_tier == resources_utils.DiskTier.ULTRA:
+            return False, ('OCI disk_tier=ultra is not supported now. '
+                           'Please use disk_tier={low, medium, high, best} '
+                           'instead.')
+        return True, ''
+
     def get_credential_file_mounts(self) -> Dict[str, str]:
         """Returns a dict of credential file paths to mount paths."""
-        oci_cfg_file = oci_adaptor.get_config_file()
-        # Pass-in a profile parameter so that multiple profile in oci
-        # config file is supported (2023/06/09).
-        oci_cfg = oci_adaptor.get_oci_config(profile=oci_conf.get_profile())
-        api_key_file = oci_cfg[
-            'key_file'] if 'key_file' in oci_cfg else 'BadConf'
-        sky_cfg_file = oci_conf.get_sky_user_config_file()
+        try:
+            oci_cfg_file = oci_adaptor.get_config_file()
+            # Pass-in a profile parameter so that multiple profile in oci
+            # config file is supported (2023/06/09).
+            oci_cfg = oci_adaptor.get_oci_config(
+                profile=oci_utils.oci_config.get_profile())
+            api_key_file = oci_cfg[
+                'key_file'] if 'key_file' in oci_cfg else 'BadConf'
+            sky_cfg_file = oci_utils.oci_config.get_sky_user_config_file()
+        # Must catch ImportError before any oci_adaptor.oci.exceptions
+        # because oci_adaptor.oci.exceptions can throw ImportError.
+        except ImportError:
+            return {}
+        except oci_adaptor.oci.exceptions.ConfigFileNotFound:
+            return {}
 
         # OCI config and API key file are mandatory
         credential_files = [oci_cfg_file, api_key_file]
 
         # Sky config file is optional
-        if os.path.exists(sky_cfg_file):
+        if os.path.exists(os.path.expanduser(sky_cfg_file)):
             credential_files.append(sky_cfg_file)
 
         file_mounts = {
@@ -414,7 +501,7 @@ class OCI(clouds.Cloud):
         return file_mounts
 
     @classmethod
-    def get_current_user_identity(cls) -> Optional[List[str]]:
+    def get_user_identities(cls) -> Optional[List[List[str]]]:
         # NOTE: used for very advanced SkyPilot functionality
         # Can implement later if desired
         # If the user switches the compartment_ocid, the existing clusters
@@ -428,15 +515,8 @@ class OCI(clouds.Cloud):
     def validate_region_zone(self, region: Optional[str], zone: Optional[str]):
         return service_catalog.validate_region_zone(region, zone, clouds='oci')
 
-    def accelerator_in_region_or_zone(self,
-                                      accelerator: str,
-                                      acc_count: int,
-                                      region: Optional[str] = None,
-                                      zone: Optional[str] = None) -> bool:
-        return service_catalog.accelerator_in_region_or_zone(
-            accelerator, acc_count, region, zone, 'oci')
-
-    def get_image_size(self, image_id: str, region: Optional[str]) -> float:
+    @classmethod
+    def get_image_size(cls, image_id: str, region: Optional[str]) -> float:
         # We ignore checking the image size because most of situations the
         # boot volume size is larger than the image size. For specific rare
         # situations, the configuration/setup commands should make sure the
@@ -449,93 +529,81 @@ class OCI(clouds.Cloud):
         region_name: str,
         instance_type: str,
     ) -> str:
-        if image_id is None:
-            return self._get_default_image(region_name=region_name,
-                                           instance_type=instance_type)
-        if None in image_id:
-            image_id_str = image_id[None]
-        else:
-            assert region_name in image_id, image_id
-            image_id_str = image_id[region_name]
+        image_id_str = self._get_image_str(image_id=image_id,
+                                           instance_type=instance_type,
+                                           region=region_name)
+
         if image_id_str.startswith('skypilot:'):
             image_id_str = service_catalog.get_image_id_from_tag(image_id_str,
                                                                  region_name,
                                                                  clouds='oci')
-            if image_id_str is None:
-                logger.critical(
-                    '! Real image_id not found! - {region_name}:{image_id}')
-                # Raise ResourcesUnavailableError to make sure the failover
-                # in CloudVMRayBackend will be correctly triggered.
-                # TODO(zhwu): This is a information leakage to the cloud
-                # implementor, we need to find a better way to handle this.
-                raise exceptions.ResourcesUnavailableError(
-                    '! ERR: No image found in catalog for region '
-                    f'{region_name}. Try setting a valid image_id.')
+
+        # Image_id should be impossible be None, except for the case when
+        # user specify an image tag which does not exist in the image.csv
+        # catalog file which only possible in "test" / "evaluation" phase.
+        # Therefore, we use assert here.
+        assert image_id_str is not None
 
         logger.debug(f'Got real image_id {image_id_str}')
         return image_id_str
 
-    def _get_default_image(self, region_name: str, instance_type: str) -> str:
+    def _get_image_str(self, image_id: Optional[Dict[Optional[str], str]],
+                       instance_type: str, region: str):
+        if image_id is None:
+            image_str = self._get_default_image_tag(instance_type)
+        elif None in image_id:
+            image_str = image_id[None]
+        else:
+            assert region in image_id, image_id
+            image_str = image_id[region]
+        return image_str
+
+    def _get_default_image_tag(self, instance_type: str) -> str:
         acc = self.get_accelerators_from_instance_type(instance_type)
 
         if acc is None:
-            image_tag = oci_conf.get_default_image_tag()
-            image_id_str = service_catalog.get_image_id_from_tag(image_tag,
-                                                                 region_name,
-                                                                 clouds='oci')
+            image_tag = oci_utils.oci_config.get_default_image_tag()
         else:
             assert len(acc) == 1, acc
-            image_tag = oci_conf.get_default_gpu_image_tag()
-            image_id_str = service_catalog.get_image_id_from_tag(image_tag,
-                                                                 region_name,
-                                                                 clouds='oci')
+            image_tag = oci_utils.oci_config.get_default_gpu_image_tag()
 
-        if image_id_str is not None:
-            logger.debug(
-                f'Got default image_id {image_id_str} from tag {image_tag}')
-            return image_id_str
+        return image_tag
 
-        # Raise ResourcesUnavailableError to make sure the failover in
-        # CloudVMRayBackend will be correctly triggered.
-        # TODO(zhwu): This is a information leakage to the cloud implementor,
-        # we need to find a better way to handle this.
-        raise exceptions.ResourcesUnavailableError(
-            'ERR: No image found in catalog for region '
-            f'{region_name}. Try update your default image_id settings.')
-
-    @classmethod
-    def check_disk_tier_enabled(cls, instance_type: str,
-                                disk_tier: str) -> None:
-        # All the disk_tier are supported for any instance_type
-        del instance_type, disk_tier  # unused
-
-    def get_vpu_from_disktier(self, cpus: Optional[float],
-                              disk_tier: Optional[str]) -> int:
-        vpu = oci_conf.BOOT_VOLUME_VPU[disk_tier]
+    def get_vpu_from_disktier(
+            self, cpus: Optional[float],
+            disk_tier: Optional[resources_utils.DiskTier]) -> int:
+        # Only normalize the disk_tier if it is not None, since OCI have
+        # different default disk tier according to #vCPU.
+        if disk_tier is not None:
+            disk_tier = OCI._translate_disk_tier(disk_tier)
+        vpu = oci_utils.oci_config.BOOT_VOLUME_VPU[disk_tier]
         if cpus is None:
             return vpu
 
         if cpus <= 2:
-            vpu = oci_conf.DISK_TIER_LOW if disk_tier is None else vpu
-            if vpu > oci_conf.DISK_TIER_LOW:
+            if disk_tier is None:
+                vpu = oci_utils.oci_config.DISK_TIER_LOW
+            if vpu > oci_utils.oci_config.DISK_TIER_LOW:
                 # If only 1 OCPU is configured, best to use the OCI default
                 # VPU (10) for the boot volume. Even if the VPU is configured
                 # to higher value (no error to launch the instance), we cannot
                 # fully achieve its IOPS/throughput performance.
                 logger.warning(
-                    f'Automatically set the VPU to {oci_conf.DISK_TIER_LOW}'
-                    f' as only 2x vCPU is configured.')
-                vpu = oci_conf.DISK_TIER_LOW
+                    'Automatically set the VPU to '
+                    f'{oci_utils.oci_config.DISK_TIER_LOW} as only 2x vCPU is '
+                    'configured.')
+                vpu = oci_utils.oci_config.DISK_TIER_LOW
         elif cpus < 8:
             # If less than 4 OCPU is configured, best not to set the disk_tier
             # to 'high' (vpu=100). Even if the disk_tier is configured to high
             # (no error to launch the instance), we cannot fully achieve its
             # IOPS/throughput performance.
-            if vpu > oci_conf.DISK_TIER_MEDIUM:
+            if vpu > oci_utils.oci_config.DISK_TIER_MEDIUM:
                 logger.warning(
-                    f'Automatically set the VPU to {oci_conf.DISK_TIER_MEDIUM}'
-                    f' as less than 8x vCPU is configured.')
-                vpu = oci_conf.DISK_TIER_MEDIUM
+                    'Automatically set the VPU to '
+                    f'{oci_utils.oci_config.DISK_TIER_MEDIUM} as less than 8x '
+                    'vCPU is configured.')
+                vpu = oci_utils.oci_config.DISK_TIER_MEDIUM
         return vpu
 
     @classmethod
@@ -543,25 +611,11 @@ class OCI(clouds.Cloud):
                      region: Optional[str], zone: Optional[str],
                      **kwargs) -> List[status_lib.ClusterStatus]:
         del zone, kwargs  # Unused.
-        # Check the lifecycleState definition from the page
-        # https://docs.oracle.com/en-us/iaas/api/#/en/iaas/latest/Instance/
-        status_map = {
-            'PROVISIONING': status_lib.ClusterStatus.INIT,
-            'STARTING': status_lib.ClusterStatus.INIT,
-            'RUNNING': status_lib.ClusterStatus.UP,
-            'STOPPING': status_lib.ClusterStatus.STOPPED,
-            'STOPPED': status_lib.ClusterStatus.STOPPED,
-            'TERMINATED': None,
-            'TERMINATING': None,
-        }
-
-        # pylint: disable=import-outside-toplevel
-        from sky.skylet.providers.oci.query_helper import oci_query_helper
 
         status_list = []
         try:
-            vms = oci_query_helper.query_instances_by_tags(
-                tag_filters=tag_filters, region=region)
+            vms = query_helper.query_instances_by_tags(tag_filters=tag_filters,
+                                                       region=region)
         except Exception as e:  # pylint: disable=broad-except
             with ux_utils.print_exception_no_traceback():
                 raise exceptions.ClusterStatusFetchingError(
@@ -571,9 +625,9 @@ class OCI(clouds.Cloud):
 
         for node in vms:
             vm_status = node.lifecycle_state
-            if vm_status in status_map:
-                sky_status = status_map[vm_status]
-                if sky_status is not None:
-                    status_list.append(sky_status)
+            sky_status = oci_utils.oci_config.STATE_MAPPING_OCI_TO_SKY.get(
+                vm_status, None)
+            if sky_status is not None:
+                status_list.append(sky_status)
 
         return status_list

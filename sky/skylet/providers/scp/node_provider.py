@@ -4,31 +4,30 @@ This module inherits NodeProvider interface
 to provide the functions accessing SCP nodes
 """
 
-import logging
-import os
-import time
-from threading import RLock
-from typing import Any, Dict, List, Optional
 import copy
 from functools import wraps
+import logging
+import os
+from threading import RLock
+import time
+from typing import Any, Dict, List, Optional
 
-from ray.autoscaler.node_provider import NodeProvider
 from ray.autoscaler._private.cli_logger import cli_logger
-from ray.autoscaler.tags import (
-    TAG_RAY_CLUSTER_NAME,
-    TAG_RAY_USER_NODE_TYPE,
-    TAG_RAY_NODE_NAME,
-    TAG_RAY_LAUNCH_CONFIG,
-    TAG_RAY_NODE_STATUS,
-    STATUS_UP_TO_DATE,
-    TAG_RAY_NODE_KIND,
-    NODE_KIND_WORKER,
-    NODE_KIND_HEAD,
-)
 from ray.autoscaler._private.util import hash_launch_conf
-from sky.skylet.providers.scp import scp_utils
+from ray.autoscaler.node_provider import NodeProvider
+from ray.autoscaler.tags import NODE_KIND_HEAD
+from ray.autoscaler.tags import NODE_KIND_WORKER
+from ray.autoscaler.tags import STATUS_UP_TO_DATE
+from ray.autoscaler.tags import TAG_RAY_CLUSTER_NAME
+from ray.autoscaler.tags import TAG_RAY_LAUNCH_CONFIG
+from ray.autoscaler.tags import TAG_RAY_NODE_KIND
+from ray.autoscaler.tags import TAG_RAY_NODE_NAME
+from ray.autoscaler.tags import TAG_RAY_NODE_STATUS
+from ray.autoscaler.tags import TAG_RAY_USER_NODE_TYPE
+
+from sky.clouds.utils import scp_utils
+from sky.clouds.utils.scp_utils import SCPCreationFailError
 from sky.skylet.providers.scp.config import ZoneConfig
-from sky.skylet.providers.scp.scp_utils import SCPCreationFailError
 from sky.utils import common_utils
 
 TAG_PATH_PREFIX = '~/.sky/generated/scp/metadata'
@@ -181,7 +180,7 @@ class SCPNodeProvider(NodeProvider):
             metadata['tags'] = instance_info['tags']
         # TODO(ewzeng): The internal ip is hard to get, so set it to the
         # external ip as a hack. This should be changed in the future.
-        #   https://docs.lambdalabs.com/cloud/learn-private-ip-address/
+        #   https://docs.lambdalabs.com/public-cloud/on-demand/getting-started/#learn-your-instances-private-ip-address
         metadata['internal_ip'] = vm['ip']
         metadata['external_ip'] = vm['external_ip']
         return metadata
@@ -260,7 +259,7 @@ class SCPNodeProvider(NodeProvider):
                     for sg in sg_contents
                     if sg["securityGroupId"] == sg_id
                 ]
-                if len(sg) != 0 and sg[0] == "ACTIVE":
+                if sg and sg[0] == "ACTIVE":
                     break
                 time.sleep(5)
 
@@ -283,16 +282,16 @@ class SCPNodeProvider(NodeProvider):
                 for sg in sg_contents
                 if sg["securityGroupId"] == sg_id
             ]
-            if len(sg) == 0:
+            if not sg:
                 break
 
     def _refresh_security_group(self, vms):
-        if len(vms) > 0:
+        if vms:
             return
         # remove security group if vm does not exist
         keys = self.metadata.keys()
         security_group_id = self.metadata[
-            keys[0]]['creation']['securityGroupId'] if len(keys) > 0 else None
+            keys[0]]['creation']['securityGroupId'] if keys else None
         if security_group_id:
             try:
                 self._del_security_group(security_group_id)
@@ -309,7 +308,7 @@ class SCPNodeProvider(NodeProvider):
                 for vm in vm_contents
                 if vm["virtualServerId"] == vm_id
             ]
-            if len(vms) == 0:
+            if not vms:
                 break
 
     def _del_firwall_rules(self, firewall_id, rule_ids):
@@ -392,7 +391,7 @@ class SCPNodeProvider(NodeProvider):
             return None, None, None, None
 
     def _undo_funcs(self, undo_func_list):
-        while len(undo_func_list) > 0:
+        while undo_func_list:
             func = undo_func_list.pop()
             func()
 
@@ -469,7 +468,7 @@ class SCPNodeProvider(NodeProvider):
 
             zone_config = ZoneConfig(self.scp_client, node_config)
             vpc_subnets = zone_config.get_vcp_subnets()
-            if (len(vpc_subnets) == 0):
+            if not vpc_subnets:
                 raise SCPError("This region/zone does not have available VPCs.")
 
             instance_config = zone_config.bootstrap_instance_config(node_config)
