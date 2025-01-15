@@ -3,43 +3,12 @@ import textwrap
 
 from click import testing as cli_testing
 
-import sky
+from sky import exceptions
 import sky.cli as cli
 
-CLOUDS_TO_TEST = ['aws', 'gcp', 'ibm', 'azure', 'lambda', 'scp', 'oci']
-
-
-def test_infer_gpunode_type():
-    resources = [
-        sky.Resources(cloud=sky.AWS(), instance_type='p3.2xlarge'),
-        sky.Resources(cloud=sky.GCP(), accelerators='K80'),
-        sky.Resources(accelerators={'V100': 8}),
-        sky.Resources(cloud=sky.Azure(), accelerators='A100'),
-    ]
-    for spec in resources:
-        assert cli._infer_interactive_node_type(spec) == 'gpunode', spec
-
-
-def test_infer_cpunode_type():
-    resources = [
-        sky.Resources(cloud=sky.AWS(), instance_type='m5.2xlarge'),
-        sky.Resources(cloud=sky.GCP()),
-        sky.Resources(),
-    ]
-    for spec in resources:
-        assert cli._infer_interactive_node_type(spec) == 'cpunode', spec
-
-
-def test_infer_tpunode_type():
-    resources = [
-        sky.Resources(cloud=sky.GCP(), accelerators='tpu-v3-8'),
-        sky.Resources(cloud=sky.GCP(), accelerators='tpu-v2-32'),
-        sky.Resources(cloud=sky.GCP(),
-                      accelerators={'tpu-v2-128': 1},
-                      accelerator_args={'tpu_name': 'tpu'}),
-    ]
-    for spec in resources:
-        assert cli._infer_interactive_node_type(spec) == 'tpunode', spec
+CLOUDS_TO_TEST = [
+    'aws', 'gcp', 'ibm', 'azure', 'lambda', 'scp', 'oci', 'vsphere'
+]
 
 
 def test_accelerator_mismatch(enable_all_clouds):
@@ -54,7 +23,7 @@ def test_accelerator_mismatch(enable_all_clouds):
     def _capture_mismatch_gpus_spec(file_path, gpus: str):
         result = cli_runner.invoke(cli.launch,
                                    [file_path, '--gpus', gpus, '--dryrun'])
-        assert isinstance(result.exception, ValueError)
+        assert isinstance(result.exception, exceptions.ResourcesMismatchError)
         assert 'Infeasible resource demands found:' in str(result.exception)
 
     def _capture_match_gpus_spec(file_path, gpus: str):
@@ -70,18 +39,17 @@ def test_accelerator_mismatch(enable_all_clouds):
         _capture_mismatch_gpus_spec(f.name, 'T4:0.5')
         _capture_mismatch_gpus_spec(f.name, 'V100:2')
         _capture_mismatch_gpus_spec(f.name, 'v100:2')
+        _capture_mismatch_gpus_spec(f.name, 'V100:0.5')
 
         _capture_match_gpus_spec(f.name, 'V100:1')
         _capture_match_gpus_spec(f.name, 'v100:1')
-        _capture_match_gpus_spec(f.name, 'V100:0.5')
         _capture_match_gpus_spec(f.name, 'V100')
 
 
 def test_show_gpus():
-    """
-    This is a test suite for `sky show-gpus` to check functionality (but not correctness).
-    The tests below correspond to the following terminal commands,
-    in order:
+    """Tests `sky show-gpus` can be invoked (but not correctness).
+
+    Tests below correspond to the following terminal commands, in order:
 
     -> sky show-gpus
     -> sky show-gpus --all
@@ -134,3 +102,40 @@ def test_show_gpus():
         result = cli_runner.invoke(cli.show_gpus,
                                    ['V100:4', '--cloud', cloud, '--all'])
         assert isinstance(result.exception, SystemExit)
+
+
+def test_k8s_alias_check():
+    cli_runner = cli_testing.CliRunner()
+
+    result = cli_runner.invoke(cli.check, ['k8s'])
+    assert not result.exit_code
+
+    result = cli_runner.invoke(cli.check, ['kubernetes'])
+    assert not result.exit_code
+
+    result = cli_runner.invoke(cli.check, ['notarealcloud'])
+    assert isinstance(result.exception, ValueError)
+
+
+def test_k8s_alias(enable_all_clouds):
+    cli_runner = cli_testing.CliRunner()
+
+    result = cli_runner.invoke(cli.launch, ['--cloud', 'k8s', '--dryrun'])
+    assert not result.exit_code
+
+    result = cli_runner.invoke(cli.launch,
+                               ['--cloud', 'kubernetes', '--dryrun'])
+    assert not result.exit_code
+
+    result = cli_runner.invoke(cli.launch,
+                               ['--cloud', 'notarealcloud', '--dryrun'])
+    assert isinstance(result.exception, ValueError)
+
+    result = cli_runner.invoke(cli.show_gpus, ['--cloud', 'k8s'])
+    assert not result.exit_code
+
+    result = cli_runner.invoke(cli.show_gpus, ['--cloud', 'kubernetes'])
+    assert not result.exit_code
+
+    result = cli_runner.invoke(cli.show_gpus, ['--cloud', 'notarealcloud'])
+    assert isinstance(result.exception, ValueError)
