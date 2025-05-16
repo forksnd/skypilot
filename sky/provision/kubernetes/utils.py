@@ -980,8 +980,12 @@ def check_instance_fits(context: Optional[str],
             if node_cpus > max_cpu:
                 max_cpu = node_cpus
                 max_mem = node_memory_gb
-            if (node_cpus >= candidate_instance_type.cpus and
-                    node_memory_gb >= candidate_instance_type.memory):
+            # We don't consider nodes that have exactly the same amount of
+            # CPU or memory as the candidate instance type.
+            # This is to account for the fact that each node always has some
+            # amount kube-system pods running on it and consuming resources.
+            if (node_cpus > candidate_instance_type.cpus and
+                    node_memory_gb > candidate_instance_type.memory):
                 return True, None
         return False, (
             'Maximum resources found on a single node: '
@@ -1082,6 +1086,16 @@ def check_instance_fits(context: Optional[str],
         return fits, reason
     else:
         return fits, reason
+
+
+def get_accelerator_label_keys(context: Optional[str],) -> List[str]:
+    """Returns the label keys that should be avoided for scheduling
+    CPU-only tasks.
+    """
+    label_formatter, _ = detect_gpu_label_formatter(context)
+    if label_formatter is None:
+        return []
+    return label_formatter.get_label_keys()
 
 
 def get_accelerator_label_key_values(
@@ -1722,9 +1736,16 @@ class KubernetesInstanceType:
     @staticmethod
     def is_valid_instance_type(name: str) -> bool:
         """Returns whether the given name is a valid instance type."""
+        # Before https://github.com/skypilot-org/skypilot/pull/4756,
+        # the accelerators are appended with format "--{a}{type}",
+        # e.g. "4CPU--16GB--1V100".
+        # Check both patterns to keep backward compatibility.
+        # TODO(romilb): Backward compatibility, remove after 0.11.0.
+        prev_pattern = re.compile(
+            r'^(\d+(\.\d+)?CPU--\d+(\.\d+)?GB)(--\d+\S+)?$')
         pattern = re.compile(
             r'^(\d+(\.\d+)?CPU--\d+(\.\d+)?GB)(--[\w\d-]+:\d+)?$')
-        return bool(pattern.match(name))
+        return bool(pattern.match(name)) or bool(prev_pattern.match(name))
 
     @classmethod
     def _parse_instance_type(
@@ -1741,6 +1762,11 @@ class KubernetesInstanceType:
             r'^(?P<cpus>\d+(\.\d+)?)CPU--(?P<memory>\d+(\.\d+)?)GB(?:--(?P<accelerator_type>[\w\d-]+):(?P<accelerator_count>\d+))?$'  # pylint: disable=line-too-long
         )
         match = pattern.match(name)
+        # TODO(romilb): Backward compatibility, remove after 0.11.0.
+        prev_pattern = re.compile(
+            r'^(?P<cpus>\d+(\.\d+)?)CPU--(?P<memory>\d+(\.\d+)?)GB(?:--(?P<accelerator_count>\d+)(?P<accelerator_type>\S+))?$'  # pylint: disable=line-too-long
+        )
+        prev_match = prev_pattern.match(name)
         if match:
             cpus = float(match.group('cpus'))
             memory = float(match.group('memory'))
@@ -1750,6 +1776,19 @@ class KubernetesInstanceType:
                 accelerator_count = int(accelerator_count)
                 # This is to revert the accelerator types with spaces back to
                 # the original format.
+                accelerator_type = str(accelerator_type).replace('_', ' ')
+            else:
+                accelerator_count = None
+                accelerator_type = None
+            return cpus, memory, accelerator_count, accelerator_type
+        # TODO(romilb): Backward compatibility, remove after 0.11.0.
+        elif prev_match:
+            cpus = float(prev_match.group('cpus'))
+            memory = float(prev_match.group('memory'))
+            accelerator_count = prev_match.group('accelerator_count')
+            accelerator_type = prev_match.group('accelerator_type')
+            if accelerator_count:
+                accelerator_count = int(accelerator_count)
                 accelerator_type = str(accelerator_type).replace('_', ' ')
             else:
                 accelerator_count = None
