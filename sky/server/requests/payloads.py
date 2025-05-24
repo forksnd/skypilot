@@ -38,10 +38,14 @@ logger = sky_logging.init_logger(__name__)
 EXTERNAL_LOCAL_ENV_VARS = [
     # Allow overriding the AWS authentication.
     'AWS_PROFILE',
+    'AWS_DEFAULT_PROFILE',
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
     # Allow overriding the GCP authentication.
     'GOOGLE_APPLICATION_CREDENTIALS',
+    # Allow overriding the kubeconfig.
+    'KUBECONFIG',
 ]
 
 
@@ -84,6 +88,11 @@ class RequestBody(pydantic.BaseModel):
     using_remote_api_server: bool = False
     override_skypilot_config: Optional[Dict[str, Any]] = {}
 
+    # Allow extra fields in the request body, which is useful for backward
+    # compatibility, i.e., we can add new fields to the request body without
+    # breaking the existing old API server.
+    model_config = pydantic.ConfigDict(extra='allow')
+
     def __init__(self, **data):
         data['env_vars'] = data.get('env_vars', request_body_env_vars())
         usage_lib_entrypoint = usage_lib.messages.usage.entrypoint
@@ -122,6 +131,7 @@ class CheckBody(RequestBody):
     """The request body for the check endpoint."""
     clouds: Optional[Tuple[str, ...]] = None
     verbose: bool = False
+    workspace: Optional[str] = None
 
 
 class DagRequestBody(RequestBody):
@@ -439,9 +449,10 @@ class ServeStatusBody(RequestBody):
 
 class RealtimeGpuAvailabilityRequestBody(RequestBody):
     """The request body for the realtime GPU availability endpoint."""
-    context: Optional[str]
-    name_filter: Optional[str]
-    quantity_filter: Optional[int]
+    context: Optional[str] = None
+    name_filter: Optional[str] = None
+    quantity_filter: Optional[int] = None
+    is_ssh: Optional[bool] = None
 
 
 class KubernetesNodeInfoRequestBody(RequestBody):
@@ -481,6 +492,12 @@ class LocalUpBody(RequestBody):
     password: Optional[str] = None
 
 
+class SSHUpBody(RequestBody):
+    """The request body for the SSH up/down endpoints."""
+    infra: Optional[str] = None
+    cleanup: bool = False
+
+
 class ServeTerminateReplicaBody(RequestBody):
     """The request body for the serve terminate replica endpoint."""
     service_name: str
@@ -514,3 +531,8 @@ class UploadZipFileResponse(pydantic.BaseModel):
     """The response body for the upload zip file endpoint."""
     status: str
     missing_chunks: Optional[List[str]] = None
+
+
+class EnabledCloudsBody(RequestBody):
+    """The request body for the enabled clouds endpoint."""
+    workspace: Optional[str] = None
